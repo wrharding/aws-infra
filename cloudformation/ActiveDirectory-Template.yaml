@@ -1,0 +1,152 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Competition Active Directory
+
+Parameters:
+
+  pVPCStack:
+    Description: Name of the main VPC Cloudformation Stack
+    Type: String
+    Default: Corporate-VPC
+
+  pCorpFQDN:
+    Description: Name of the Corporate Domain
+    Type: String
+    AllowedPattern: '^([a-zA-Z0-9]+[\\.-])+([a-zA-Z0-9])+$'
+
+  pAdPasswordSecretID:
+    Type: String
+    Description: SecretsManager secret ID for the Administrator password
+    Default: ADAdministratorPassword
+
+  pCorpShortName:
+    Description: Short Name for the corporation
+    Type: String
+    Default: CORP
+    AllowedPattern: '^[^\\/:*?"<>|.]+[^\\/:*?"<>|]*$'
+
+  pUserOU:
+    Type: String
+    Description: OU where Users will kept
+
+  pVPCPrivateHostedZoneId:
+    Type: String
+    Description: Private Hosted Zone ID to create DNS Record
+
+Resources:
+
+  CompetitionSimpleAD:
+    Type: AWS::DirectoryService::SimpleAD
+    Properties:
+      Description: !Sub "Created by ${AWS::StackName}"
+      EnableSso: false
+      Name: !Ref pCorpFQDN
+      Password: !Sub "{{resolve:secretsmanager:${pAdPasswordSecretID}:SecretString}}"
+      ShortName: !Ref pCorpShortName
+      Size: Small
+      VpcSettings:
+        SubnetIds:
+          - Fn::ImportValue: !Sub "${pVPCStack}-WorkspacesSubnetA"
+          - Fn::ImportValue: !Sub "${pVPCStack}-WorkspacesSubnetB"
+        VpcId:
+          Fn::ImportValue:
+            !Sub "${pVPCStack}-VpcId"
+
+  WorkSpacesDefaultRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - workspaces.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Description: "Required for Workspaces to use the Simple AD"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonWorkSpacesServiceAccess
+      - arn:aws:iam::aws:policy/AmazonWorkSpacesSelfServiceAccess
+      RoleName: workspaces_DefaultRole
+
+  LDAPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPrivateHostedZoneId
+      Name: !Sub "ldap.${pCorpFQDN}"
+      ResourceRecords: !GetAtt CompetitionSimpleAD.DnsIpAddresses
+      TTL: 60
+      Type: A
+
+  # TODO:  _ldap._tcp.<DnsDomainName> and _kerberos._tcp.<DnsDomainName> SRV records should be created
+  # SRVRecordSet:
+  #   Type: AWS::Route53::RecordSet
+  #   Properties:
+  #     HostedZoneId: !Ref pVPCPrivateHostedZoneId
+  #     Name: !Sub "_ldap._tcp.${pCorpFQDN}"
+  #     ResourceRecords:
+  #       - #TODO What values go here?
+  #     TTL: 60
+  #     Type: SRV
+
+  ADStackParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: Parameters for Active Directory
+      Type: String
+      Name: !Sub "${AWS::StackName}"
+      Value:
+        Fn::Sub:
+        - |-
+            {
+              "SimpleADDnsIpAddresses": ["${DnsIpAddresses}"],
+              "SimpleADId": "${CompetitionSimpleAD}",
+              "SimpleADAlias": "${CompetitionSimpleAD.Alias}",
+              "Domain": "${pCorpShortName}",
+              "FQDN": "${pCorpFQDN}",
+              "UserOU": "${pUserOU}"
+            }
+        - DnsIpAddresses:
+            Fn::Join:
+            - "\",\""
+            - !GetAtt CompetitionSimpleAD.DnsIpAddresses
+
+
+Outputs:
+
+  StackName:
+    Value: !Ref 'AWS::StackName'
+
+  SimpleADId:
+    Value: !Ref CompetitionSimpleAD
+
+  SimpleADAlias:
+    Value: !GetAtt CompetitionSimpleAD.Alias
+
+  SimpleADDnsIpAddresses:
+    Value: !Join
+    - ","
+    - !GetAtt CompetitionSimpleAD.DnsIpAddresses
+

@@ -1,0 +1,374 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Corporate Server
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  pVPCStack:
+    Description: Name of the VPC Cloudformation Stack
+    Type: String
+    Default: Corporate-VPC
+
+  pSubnet:
+    Description: Subnet for instance
+    Type: String
+    AllowedValues:
+      - "PublicSubnetA"
+      - "PublicSubnetB"
+      - "ServerSubnet"
+      - "WorkspacesSubnetA"
+      - "WorkspacesSubnetB"
+    Default: "ServerSubnet"
+
+  pInstanceType:
+    Description: Size of the Instance. Instance Type must be a Nitro-based instance
+    Type: String
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Default: t3.micro
+
+  pInstanceAMI:
+    Description: Base AMI for the instances
+    Type: AWS::EC2::Image::Id
+
+  pKeyName:
+    Description: KeyName for instances
+    Type: AWS::EC2::KeyPair::KeyName
+
+  pInstanceProfile:
+    Description: Name of The EC2 Instance Profile To Use (or none to have one created)
+    Type: String
+    Default: None
+
+  pFQDN:
+    Description: Fully Qualified Domain Name for this host (gets registered in Route53)
+    Type: String
+
+  pTagKeyToEnable:
+    Description: Instances with this tag key are enabled for Mirroring
+    Type: String
+    Default: WireShark
+
+  pRuleState:
+    Type: String
+    Description: Enable to disable the CloudWatch Event to fire the Stepfunction
+    Default: False
+    AllowedValues:
+      - True
+      - False
+
+Conditions:
+  CreateInstanceProfile: !Equals [ !Ref pInstanceProfile, "None" ]
+
+Resources:
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref 'pKeyName'
+      DisableApiTermination: 'false'
+      ImageId: !Ref 'pInstanceAMI'
+      InstanceType: !Ref 'pInstanceType'
+      IamInstanceProfile: !If [ CreateInstanceProfile, !Ref InstanceIamInstanceProfile, !Ref pInstanceProfile ]
+      Monitoring: 'false'
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${pVPCStack}-SecurityGroup"
+      SubnetId:
+        Fn::ImportValue: !Sub "${pVPCStack}-${pSubnet}"
+      Tags:
+      - Key: Name
+        Value: !Ref AWS::StackName
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash -x
+            yum update -y &&
+            yum install -y nmap git awslogs &&
+            chkconfig awslogs on && service awslogs restart
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+
+  InstanceIamInstanceProfile:
+    Condition: CreateInstanceProfile
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'InstanceIamInstanceRole']
+
+  InstanceIamInstanceRole:
+    Type: AWS::IAM::Role
+    Condition: CreateInstanceProfile
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Policies:
+      - PolicyName: AllowCloudWatchLogs
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents',
+              'logs:DescribeLogStreams']
+            Resource: ['arn:aws:logs:*:*:*']
+
+  PrivateRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue:
+          !Sub "${pVPCStack}-PrivateZoneId"
+      Name: !Ref pFQDN
+      ResourceRecords:
+        - !GetAtt Instance.PrivateIp
+      TTL: 60
+      Type: A
+
+  #
+  # VPC Traffic Mirroring
+  #
+
+  TrafficMirrorTargetInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Traffic Mirroring Target
+      SourceDestCheck: 'false'
+      GroupSet:
+        - Fn::ImportValue:
+            !Sub "${pVPCStack}-SecurityGroup"
+      SubnetId:
+        Fn::ImportValue: !Sub "${pVPCStack}-${pSubnet}"
+
+  NetworkInterfaceAttachment:
+    Type: AWS::EC2::NetworkInterfaceAttachment
+    Properties:
+      InstanceId: !Ref Instance
+      NetworkInterfaceId: !Ref TrafficMirrorTargetInterface
+      DeviceIndex: 1
+      DeleteOnTermination: false  # But would be deleted when the stack is deleted
+
+  TrafficMirrorTarget:
+    Type: AWS::EC2::TrafficMirrorTarget
+    DependsOn: NetworkInterfaceAttachment
+    Properties:
+      Description: !Sub "Traffic Mirror Target for ${AWS::StackName}"
+      NetworkInterfaceId: !Ref TrafficMirrorTargetInterface
+      Tags:
+      - Key: "Name"
+        Value: !Sub "${AWS::StackName}-Target"
+
+  TrafficMirrorFilter:
+    Type: AWS::EC2::TrafficMirrorFilter
+    Properties:
+      Description: !Sub "Created by ${AWS::StackName}"
+      # NetworkServices:
+      #   - "amazon-dns"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-Filter"
+
+  UDPIngressTrafficMirrorFilterRule:
+    Type: AWS::EC2::TrafficMirrorFilterRule
+    Properties:
+      Description: !Sub "Created by ${AWS::StackName}"
+      TrafficMirrorFilterId: !Ref TrafficMirrorFilter
+      TrafficDirection: "ingress"
+      RuleNumber: 11
+      DestinationCidrBlock: "0.0.0.0/0"
+      SourceCidrBlock: "0.0.0.0/0"
+      RuleAction: "accept"
+      Protocol: 17
+
+  TCPIngressTrafficMirrorFilterRule:
+    Type: AWS::EC2::TrafficMirrorFilterRule
+    Properties:
+      Description: !Sub "Created by ${AWS::StackName}"
+      TrafficMirrorFilterId: !Ref TrafficMirrorFilter
+      TrafficDirection: "ingress"
+      RuleNumber: 20
+      DestinationCidrBlock: "0.0.0.0/0"
+      SourceCidrBlock: "0.0.0.0/0"
+      RuleAction: "accept"
+      Protocol: 6
+
+  UDPEgressTrafficMirrorFilterRule:
+    Type: AWS::EC2::TrafficMirrorFilterRule
+    Properties:
+      Description: !Sub "Created by ${AWS::StackName}"
+      TrafficMirrorFilterId: !Ref TrafficMirrorFilter
+      TrafficDirection: "egress"
+      RuleNumber: 30
+      DestinationCidrBlock: "0.0.0.0/0"
+      SourceCidrBlock: "0.0.0.0/0"
+      RuleAction: "accept"
+      Protocol: 17
+
+  TCPEgressTrafficMirrorFilterRule:
+    Type: AWS::EC2::TrafficMirrorFilterRule
+    Properties:
+      Description: !Sub "Created by ${AWS::StackName}"
+      TrafficMirrorFilterId: !Ref TrafficMirrorFilter
+      TrafficDirection: "egress"
+      RuleNumber: 40
+      DestinationCidrBlock: "0.0.0.0/0"
+      SourceCidrBlock: "0.0.0.0/0"
+      RuleAction: "accept"
+      Protocol: 6
+
+  #
+  # Lambda to enable WireShark
+  #
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: TrafficMirroring
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - ec2:CreateTrafficMirrorSession
+            Effect: Allow
+            Resource: '*'
+
+  SetupMirrorSessionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-configure-sessions"
+      Description: Configure Traffic Mirroring Sessions
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout: 900
+      MemorySize: 2048
+      Role: !GetAtt LambdaRole.Arn
+      Environment:
+        Variables:
+          TAG_KEY: !Ref pTagKeyToEnable
+          LOG_LEVEL: INFO
+          TARGET_ID: !Ref TrafficMirrorTarget
+          FILTER_ID: !Ref TrafficMirrorFilter
+      Events:
+        ScheduledExecution:
+          Type: Schedule
+          Properties:
+            Description: !Sub "Trigger ${AWS::StackName}-configure-sessions lambda"
+            Enabled: !Ref pRuleState
+            Schedule: rate(30 minutes)
+      InlineCode: |
+        import boto3
+        from botocore.exceptions import ClientError
+        import json
+        import os
+
+        import logging
+        logger = logging.getLogger()
+        logger.setLevel(getattr(logging, os.getenv('LOG_LEVEL', default='INFO')))
+        logging.getLogger('botocore').setLevel(logging.WARNING)
+        logging.getLogger('boto3').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+        TAG_KEY=os.getenv('TAG_KEY', default='WireShark')
+
+        def handler(event, context):
+            logger.debug("Received event: " + json.dumps(event, sort_keys=True))
+
+            ec2_client = boto3.client('ec2')
+
+            mirror_sessions = ec2_client.describe_traffic_mirror_sessions()['TrafficMirrorSessions']
+            enabled_enis = []
+            max_session_id = 0
+            for s in mirror_sessions:
+                enabled_enis.append(s['NetworkInterfaceId'])
+                if s['SessionNumber'] > max_session_id:
+                    max_session_id = s['SessionNumber']
+
+            response = ec2_client.describe_instances(
+                Filters=[
+                    {'Name': 'instance-state-name', 'Values': ['running']},
+                ],
+                MaxResults=1000  # I should never need to paginate.
+            )
+
+            for r in response['Reservations']:
+                for i in r['Instances']:
+                    if not i['InstanceType'].startswith("t3"):
+                        logger.debug(f"Instance {i['InstanceId']} is not a t3 and does not support Traffic Mirroring")
+                        continue
+
+                    for tag in i['Tags']:
+                        if tag['Key'] == TAG_KEY:
+                            # See if a mirror session is setup
+                            for eni in i['NetworkInterfaces']:
+                                if eni['NetworkInterfaceId'] not in enabled_enis:
+                                    logger.info(f"ENI {eni['NetworkInterfaceId']} on Instance {i['InstanceId']} needs Mirroring Enabled")
+                                    max_session_id += 1
+                                    enable_traffic_mirroring(ec2_client, eni['NetworkInterfaceId'], i['InstanceId'], max_session_id)
+                                else:
+                                    logger.debug(f"ENI {eni['NetworkInterfaceId']} on Instance {i['InstanceId']} is already Enabled")
+
+        def enable_traffic_mirroring(ec2_client, eni, instance_id, session_id):
+
+            response = ec2_client.create_traffic_mirror_session(
+                NetworkInterfaceId=eni,
+                TrafficMirrorTargetId=os.environ['TARGET_ID'],
+                TrafficMirrorFilterId=os.environ['FILTER_ID'],
+                SessionNumber=session_id,
+                Description=f"Enabled by Lambda for {instance_id}"
+            )
+
+        ## END OF FUNCTION ##
+
+
+Outputs:
+
+  StackName:
+    Value: !Ref 'AWS::StackName'
+
+  InstanceId:
+    Value: !Ref 'Instance'
+
+  InstanceIp:
+    Value: !GetAtt Instance.PrivateIp
+
+

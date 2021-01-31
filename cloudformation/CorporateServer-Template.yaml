@@ -1,0 +1,159 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Corporate Server
+
+Parameters:
+
+  pVPCStack:
+    Description: Name of the VPC Cloudformation Stack
+    Type: String
+    Default: Corporate-VPC
+
+  pCorporateStack:
+    Description: Name of the main VPC Cloudformation Stack
+    Type: String
+    Default: Corporate-VPC
+
+  pSubnet:
+    Description: Subnet for instance
+    Type: String
+    Default: "ServerSubnet"
+
+  pInstanceType:
+    Description: Size of the Instance
+    Type: String
+    AllowedValues: [t2.micro, t2.small, t2.medium, t3.micro, t3.small, t3.medium]
+    Default: t2.micro
+
+  pInstanceAMI:
+    Description: Base AMI for the instances
+    Type: AWS::EC2::Image::Id
+
+  pKeyName:
+    Description: KeyName for instances
+    Type: AWS::EC2::KeyPair::KeyName
+
+  pInstanceProfile:
+    Description: Name of The EC2 Instance Profile To Use (or none to have one created)
+    Type: String
+    Default: None
+
+  pFQDN:
+    Description: Fully Qualified Domain Name for this host (gets registered in Route53)
+    Type: String
+
+
+Conditions:
+  CreateInstanceProfile: !Equals [ !Ref pInstanceProfile, "None" ]
+
+Resources:
+
+  Instance:
+    Type: AWS::EC2::Instance
+    # This forces the Instance to cfn-signal for the stack to be successful.
+    # This fails for instances w/o access to AWS API
+    # CreationPolicy:
+    #   ResourceSignal:
+    #     Count: '1'
+    #     Timeout: PT10M
+    Properties:
+      KeyName: !Ref 'pKeyName'
+      DisableApiTermination: 'false'
+      ImageId: !Ref 'pInstanceAMI'
+      InstanceType: !Ref 'pInstanceType'
+      IamInstanceProfile: !If [ CreateInstanceProfile, !Ref InstanceIamInstanceProfile, !Ref pInstanceProfile ]
+      Monitoring: 'false'
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${pVPCStack}-SecurityGroup"
+      SubnetId:
+        Fn::ImportValue: !Sub "${pVPCStack}-${pSubnet}"
+      Tags:
+      - Key: Name
+        Value: !Ref AWS::StackName
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash -x
+            yum update -y &&
+            yum install -y nmap git awslogs &&
+            chkconfig awslogs on && service awslogs restart
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+
+  InstanceIamInstanceProfile:
+    Condition: CreateInstanceProfile
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'InstanceIamInstanceRole']
+
+  InstanceIamInstanceRole:
+    Type: AWS::IAM::Role
+    Condition: CreateInstanceProfile
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Policies:
+      - PolicyName: AllowCloudWatchLogs
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents',
+              'logs:DescribeLogStreams']
+            Resource: ['arn:aws:logs:*:*:*']
+
+  PrivateRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue:
+          !Sub "${pCorporateStack}-PrivateZoneId"
+      Name: !Ref pFQDN
+      ResourceRecords:
+        - !GetAtt Instance.PrivateIp
+      TTL: 60
+      Type: A
+
+
+Outputs:
+
+  StackName:
+    Value: !Ref 'AWS::StackName'
+
+  InstanceId:
+    Value: !Ref 'Instance'
+
+  InstanceIp:
+    Value: !GetAtt Instance.PrivateIp
+
+

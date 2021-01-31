@@ -1,0 +1,619 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SECCDC Competition Team VPC
+
+# Parameters are inputs to CloudFormation. As convention I always prefix them with "p" so it's
+# obvious when referencing a Parameter or Resource
+Parameters:
+
+  pVPCDomain:
+    Description: DNS Suffix for this team's VPC
+    Type: String
+    Default: teamX.halcorp.seccdc.net
+
+  pVPCPublicHostedZoneId:
+    Description: Hosted Zone ID of the Public HostedZoneId - created by Corporate VPC
+    Type: String
+
+  pVPCPrivateHostedZoneId:
+    Type: String
+    Description: Hosted Zone ID of the Private HostedZoneId - created by Corporate VPC
+
+  pFirstAzName:
+    Description: Availability Zone 1 Name in Region. Must be one of use1-az4, use1-az6, use1-az2
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+
+  pSecondAzName:
+    Description: Availability Zone 2 Name in Region. Must be one of use1-az4, use1-az6, use1-az2
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1c
+
+  pVpcCIDR:
+    Description: CIDR block for VPC
+    Type: String
+    Default: 10.10.999.0/24
+
+  pFirewallSubnetCIDR:
+    Description: CIDR block for Firewall Subnet
+    Type: String
+    Default: 10.10.999.0/28
+
+  pDMZSubnetCIDR:
+    Description: CIDR block for DMZ Subnet
+    Type: String
+    Default: 10.10.999.16/28
+
+  pDMZSubnetBCIDR:
+    Description: CIDR block for DMZ Subnet in AZ2
+    Type: String
+    Default: 10.10.999.32/28
+
+  pServerSubnetCIDR:
+    Description: CIDR block for Server Subnet
+    Type: String
+    Default: 10.10.999.128/25
+
+  pEnableFlowLogs:
+    Description: Enable VPC FlowLogs to CloudWatch Logs - *** Will Incur Charges!!!! ***
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  pCorporateCIDR:
+    Type: String
+    Description: CIDR Range for the entire corporate network.
+    Default: 10.0.0.0/8
+
+  pCorporateVpcId:
+    Description: VpcId of the Corporate VPC to create a peer to (or NONE to disable)
+    Type: String
+    Default: NONE
+
+  pCorporatePublicRouteTable:
+    Description: ID for the Corporate VPC's Public Route Table
+    Type: String
+    Default: ""
+
+  pCorporateServerRouteTable:
+    Description: ID for the Corporate VPC's Server Route Table
+    Type: String
+    Default: ""
+
+  pCorporateWorkspacesRouteTable:
+    Description: ID for the Corporate VPC's Workspaces Route Table
+    Type: String
+    Default: ""
+
+  pDeployNatGW:
+    Description: Deploy NatGateways for your Private Subnets - *** Will Incur Charges!!!! ***
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+# Conditions are booleans that are used in the Resources block to control behavior
+Conditions:
+  cFlowLogs: !Equals [ !Ref pEnableFlowLogs, 'true' ]
+  cCreateVPCPeer: !Not [ !Equals [ !Ref pCorporateVpcId, "NONE"] ]
+  cDeployNatGateways: !Equals [ !Ref pDeployNatGW, 'true' ]
+
+Resources:
+  # Reference http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html for Resource type definitions
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref 'pVpcCIDR'
+      InstanceTenancy: default
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+
+  DHCPoptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: !Ref 'pVPCDomain'
+      DomainNameServers:
+        - AmazonProvidedDNS
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-DHCPOptions"
+
+  DHCPOptionsAssoc:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId: !Ref VPC
+      DhcpOptionsId: !Ref DHCPoptions
+
+  #
+  # Subnets
+  #
+  FirewallSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref pFirewallSubnetCIDR
+      AvailabilityZone: !Ref 'pFirstAzName'
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-FirewallSubnet-${pFirstAzName}"
+
+  DMZSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref pDMZSubnetCIDR
+      AvailabilityZone: !Ref pFirstAzName
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-DMZSubnet-${pFirstAzName}"
+
+  DMZSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref pDMZSubnetBCIDR
+      AvailabilityZone: !Ref pSecondAzName
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-DMZSubnet-${pSecondAzName}"
+
+  ServerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref pServerSubnetCIDR
+      AvailabilityZone: !Ref 'pFirstAzName'
+      MapPublicIpOnLaunch: 'false'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ServerSubnet-${pFirstAzName}"
+
+  #
+  # Create the Route Tables
+  #
+  IGWRouteTable:
+    # Note, the creation of a routetable automatically creates a route
+    # for the local CIDR range to "local"
+    # For VPC Ingress Routing, this needs to be changed to the Firewall ENI, however
+    # Cloudformation doesn't let us add the other route, since the a route for the vpc cidr already exists.
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-IGWRouteTable"
+
+  FirewallRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-FirewallRouteTable"
+
+  DMZRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-DMZRouteTable"
+
+  ServerRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ServerRouteTable"
+
+  #
+  # Associate Route Tables with their subnets
+  #
+  FirewallRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref FirewallRouteTable
+      SubnetId: !Ref FirewallSubnet
+
+  DMZRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DMZRouteTable
+      SubnetId: !Ref DMZSubnet
+
+  DMZBRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DMZRouteTable
+      SubnetId: !Ref DMZSubnetB
+
+
+  ServerRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ServerRouteTable
+      SubnetId: !Ref ServerSubnet
+
+  # IGW Routeable Association
+  IGWRouteTableAssoc:
+    Type: AWS::EC2::GatewayRouteTableAssociation
+    Properties:
+      GatewayId: !Ref IGW
+      RouteTableId: !Ref IGWRouteTable
+
+
+  #
+  # Firewall Interfaces
+  #
+  FWPublicNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: AWS FW1 E1/1
+      SubnetId: !Ref FirewallSubnet
+      SourceDestCheck: 'false'
+      GroupSet:
+        - !Ref FWExteriorSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} AWS FW1 E1/1"
+    DependsOn:
+      - FWExteriorSecurityGroup
+
+  FWDMZNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: AWS FW1 E1/2
+      SubnetId: !Ref DMZSubnet
+      SourceDestCheck: 'false'
+      GroupSet:
+        - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} AWS FW1 E1/2"
+    DependsOn:
+      - SecurityGroup
+
+  FWPublicNetworkInterfaceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  FWPublicNetworkInterfaceEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt FWPublicNetworkInterfaceEIP.AllocationId
+      NetworkInterfaceId: !Ref FWPublicNetworkInterface
+
+  FWDMZNetworkInterfaceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  FWDMZNetworkInterfaceEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt FWDMZNetworkInterfaceEIP.AllocationId
+      NetworkInterfaceId: !Ref FWDMZNetworkInterface
+
+  FWPublicNetworkInterfaceEIPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPublicHostedZoneId
+      Name: !Sub "firewall-ext.${pVPCDomain}"
+      ResourceRecords:
+        - !Ref FWPublicNetworkInterfaceEIP
+      TTL: 60
+      Type: A
+
+  FWDMZNetworkInterfaceEIPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPublicHostedZoneId
+      Name: !Sub "firewall-dmz.${pVPCDomain}"
+      ResourceRecords:
+        - !Ref FWDMZNetworkInterfaceEIP
+      TTL: 60
+      Type: A
+
+  #
+  # Define the Routes
+  #
+  FirewallSubnetDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref FirewallRouteTable
+      GatewayId: !Ref IGW
+      DestinationCidrBlock: "0.0.0.0/0"
+
+  DMZSubnetDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref DMZRouteTable
+      NetworkInterfaceId: !Ref FWDMZNetworkInterface
+      DestinationCidrBlock: "0.0.0.0/0"
+
+  ServerSubnetDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref ServerRouteTable
+      NatGatewayId: !Ref FirstNatGateway
+      DestinationCidrBlock: "0.0.0.0/0"
+
+  # See note above about why this has to be commented out.
+  # IGWVPCRoute:
+  #   Type: AWS::EC2::Route
+  #   Properties:
+  #     RouteTableId: !Ref IGWRouteTable
+  #     NetworkInterfaceId: !Ref FWPublicNetworkInterface
+  #     DestinationCidrBlock: !Ref pVpcCIDR
+
+  #
+  # Create router endpoints for the VPC
+  #
+  IGW:
+    # IGW routes to the internet
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-IGW"
+  IGWAttachmentIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn: IGW
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  #
+  # Nat Gateway Resources
+  #
+  FirstNatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Condition: cDeployNatGateways
+    DependsOn: VPC
+    Properties:
+      Domain: vpc
+
+  FirstNatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: cDeployNatGateways
+    Properties:
+      AllocationId: !GetAtt 'FirstNatGatewayEIP.AllocationId'
+      SubnetId: !Ref 'DMZSubnet'
+
+  NatGatewayEIPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Condition: cDeployNatGateways
+    Properties:
+      HostedZoneId: !Ref pVPCPublicHostedZoneId
+      Name: !Sub "natgateway.${pVPCDomain}"
+      ResourceRecords:
+        - !Ref FirstNatGatewayEIP
+      TTL: 60
+      Type: A
+
+
+  # Allows direct access to S3 for BuildTeam needs
+  VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: '*'
+            Effect: Allow
+            Resource: '*'
+            Principal: '*'
+      RouteTableIds:
+        - !Ref ServerRouteTable
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcId: !Ref VPC
+
+  # Not yet used but belongs in most VPCs anyway
+  VPNGateway:
+    Type: AWS::EC2::VPNGateway
+    Properties:
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vgw"
+  VPNGatewayAssociation:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      VpnGatewayId: !Ref VPNGateway
+
+  # Create a security group that allows anything in the Corporate CIDR to talk to anything else
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: "Generated by the Team VPC Template"
+      GroupName: !Sub "${AWS::StackName}-SecurityGroup"
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow Everything
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-GenericSecurityGroup"
+
+  FWExteriorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Firewall External Interface
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Firewall External SG
+      SecurityGroupIngress:
+        - IpProtocol: '1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: '0.0.0.0/0'
+          Description: Allow Ping From Everywhere
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow Everything - Remove me during Competition
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+
+  #
+  # Here we enable VPC flow logs for forensic needs later
+  #
+  VpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Condition: cFlowLogs
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: VPCFlowLog
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: '*'
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Condition: cFlowLogs
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt VpcFlowLogRole.Arn
+      LogGroupName: !Sub "/aws/vpcFlowLogs/${AWS::StackName}"
+      VpcId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+
+
+  #
+  # Establish VPC Peering to the Corporate VPC and configure MirrorSubnet Routes
+  #
+  TeamToCorporateVPCPeeringConnection:
+    Type: AWS::EC2::VPCPeeringConnection
+    Condition: cCreateVPCPeer
+    Properties:
+      PeerVpcId: !Ref pCorporateVpcId
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-VPCPeeringConnection"
+
+  ServerSubnetVPCPeerRoute:
+    Type: AWS::EC2::Route
+    Condition: cCreateVPCPeer
+    Properties:
+      RouteTableId: !Ref ServerRouteTable
+      DestinationCidrBlock: !Ref pCorporateCIDR
+      VpcPeeringConnectionId: !Ref TeamToCorporateVPCPeeringConnection
+
+  CorporatePublicRoute:
+    Type: AWS::EC2::Route
+    Condition: cCreateVPCPeer
+    Properties:
+      RouteTableId: !Ref pCorporatePublicRouteTable
+      DestinationCidrBlock: !Ref pServerSubnetCIDR
+      VpcPeeringConnectionId: !Ref TeamToCorporateVPCPeeringConnection
+
+  CorporateServerRoute:
+    Type: AWS::EC2::Route
+    Condition: cCreateVPCPeer
+    Properties:
+      RouteTableId: !Ref pCorporateServerRouteTable
+      DestinationCidrBlock: !Ref pServerSubnetCIDR
+      VpcPeeringConnectionId: !Ref TeamToCorporateVPCPeeringConnection
+
+  CorporateWorkspacesRoute:
+    Type: AWS::EC2::Route
+    Condition: cCreateVPCPeer
+    Properties:
+      RouteTableId: !Ref pCorporateWorkspacesRouteTable
+      DestinationCidrBlock: !Ref pServerSubnetCIDR
+      VpcPeeringConnectionId: !Ref TeamToCorporateVPCPeeringConnection
+
+
+Outputs:
+
+  VpcId:
+    Description: VPC ID Created
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  StackName:
+    Description: StackName
+    Value: !Ref 'AWS::StackName'
+
+  FirewallSubnet:
+    Description: Subnet ID of the Firewall Subnet
+    Value: !Ref FirewallSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-FirewallSubnet"
+
+  DMZSubnet:
+    Description: Subnet ID of the DMZ Subnet
+    Value: !Ref DMZSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-DMZSubnet"
+
+  DMZSubnetB:
+    Description: Subnet ID of the DMZ Subnet in AZ2
+    Value: !Ref DMZSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}-DMZSubnetB"
+
+  ServerSubnet:
+    Description: Subnet ID of the Server Subnet
+    Value: !Ref ServerSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-ServerSubnet"
+
+  SecurityGroup:
+    Description: ID of the Security Group Created
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityGroup"
+

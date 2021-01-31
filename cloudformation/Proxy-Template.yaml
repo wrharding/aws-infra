@@ -1,0 +1,281 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Corp Proxy Server
+
+Parameters:
+
+  pSubnetId:
+    Description: Subnet for instance
+    Type: String
+
+  pVpcId:
+    Description: Subnet for instance
+    Type: String
+
+  pInstanceType:
+    Description: Size of the Instance
+    Type: String
+    AllowedValues: [t2.micro, t2.small, t2.medium]
+    Default: t2.micro
+
+  pInstanceAMI:
+    Description: Base AMI for the instances
+    Type: AWS::EC2::Image::Id
+
+  pKeyName:
+    Description: KeyName for instances
+    Type: AWS::EC2::KeyPair::KeyName
+
+  pInstanceProfile:
+    Description: Name of The EC2 Instance Profile To Use (or none to have one created)
+    Type: String
+    Default: None
+
+  pVPCPublicHostedZoneId:
+    Description: Hosted Zone ID to create DNS Record
+    Type: String
+
+  pVPCPrivateHostedZoneId:
+    Type: String
+    Description: Private Hosted Zone ID to create DNS Record
+
+  pVPCDomain:
+    Description: Domain Name of the Hosted Zone
+    Type: String
+
+  pHostname:
+    Description: Hostname for this Proxy Instance
+    Type: String
+
+  pServerSubnetRouteTable:
+    Description: Route Table to add a route to the Proxy
+    Type: String
+
+  pWorkspaceSubnetRouteTable:
+    Description: Route Table to add a route to the Proxy
+    Type: String
+
+  pInternalIP:
+    Type: String
+    Description: Static IP for the internal interface
+    Default: 10.10.100.13
+
+Conditions:
+  CreateInstanceProfile: !Equals [ !Ref pInstanceProfile, "None" ]
+
+Resources:
+
+  Instance:
+    Type: AWS::EC2::Instance
+    # This forces the Instance to cfn-signal for the stack to be successful.
+    # CreationPolicy:
+    #   ResourceSignal:
+    #     Count: '1'
+    #     Timeout: PT10M
+    Properties:
+      KeyName: !Ref 'pKeyName'
+      DisableApiTermination: 'false'
+      ImageId: !Ref 'pInstanceAMI'
+      InstanceType: !Ref 'pInstanceType'
+      IamInstanceProfile: !If [ CreateInstanceProfile, !Ref InstanceIamInstanceProfile, !Ref pInstanceProfile ]
+      Monitoring: 'false'
+      Tags:
+      - Key: Name
+        Value: !Ref AWS::StackName
+      # Don't send AmazonLinux userdata script to the pfSense AMI
+      # UserData:
+      #   Fn::Base64:
+      #     Fn::Sub: |
+      #       #!/bin/bash -x
+      #       yum update -y &&
+      #       yum install -y nmap git awslogs telnet &&
+      #       chkconfig awslogs on && service awslogs restart
+      #       /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref 'ProxyExternalInterface'
+          DeviceIndex: 0
+        - NetworkInterfaceId: !Ref 'ProxyInternalInterface'
+          DeviceIndex: 1
+
+  InstanceIamInstanceProfile:
+    Condition: CreateInstanceProfile
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'InstanceIamInstanceRole']
+
+  InstanceIamInstanceRole:
+    Type: AWS::IAM::Role
+    Condition: CreateInstanceProfile
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Policies:
+      - PolicyName: AllowCloudWatchLogs
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents',
+              'logs:DescribeLogStreams']
+            Resource: ['arn:aws:logs:*:*:*']
+
+  #
+  # Interfaces
+  #
+  ProxyExternalInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: pfSense xn0 (wan)
+      SubnetId: !Ref pSubnetId
+      SourceDestCheck: 'false'
+      GroupSet:
+        - !Ref ProxyExternalSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} pfSense xn0 (wan)"
+    DependsOn:
+      - ProxyExternalSecurityGroup
+
+  ProxyInternalInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: pfSense xn1 (lan)
+      SubnetId: !Ref pSubnetId
+      SourceDestCheck: 'false'
+      PrivateIpAddresses:
+        - PrivateIpAddress: !Ref pInternalIP
+          Primary: 'true'
+      GroupSet:
+        - !Ref ProxyInternalSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} pfSense xn1 (lan)"
+    DependsOn:
+      - ProxyInternalSecurityGroup
+
+  ProxyExternalEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  ProxyExternalEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ProxyExternalEIP.AllocationId
+      NetworkInterfaceId: !Ref ProxyExternalInterface
+
+  ProxyEIPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPublicHostedZoneId
+      Name: !Sub "${pHostname}.${pVPCDomain}"
+      ResourceRecords:
+        - !Ref ProxyExternalEIP
+      TTL: 60
+      Type: A
+
+  ProxyEIPPrivateRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPrivateHostedZoneId
+      Name: !Sub "${pHostname}.${pVPCDomain}"
+      ResourceRecords:
+        - !GetAtt ProxyInternalInterface.PrimaryPrivateIpAddress
+      TTL: 60
+      Type: A
+
+  ProxyExternalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref pVpcId
+      GroupDescription: !Sub "Generated by the ${AWS::StackName}"
+      GroupName: !Sub "${AWS::StackName}-ProxyExternalSecurityGroup"
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: "0.0.0.0/0"
+          Description: "Allow all Ping (added by CFT)"
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "10.0.0.0/8"
+          Description: "Allow ssh internally (added by CFT)"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ExternalSecurityGroup"
+
+  ProxyInternalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref pVpcId
+      GroupDescription: !Sub "Generated by the ${AWS::StackName}"
+      GroupName: !Sub "${AWS::StackName}-ProxyInternalSecurityGroup"
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: "Allow _all_ traffic on the internal side to pfSense (added by CFT)"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ProxyInternalSecurityGroup"
+
+
+  #
+  # Now we have to setup the Route tables
+  # Corp Servers and all the Workspaces must egress via the proxy
+  #
+  ServerSubnetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref pServerSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NetworkInterfaceId: !Ref ProxyInternalInterface
+
+  WorkspaceSubnetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref pWorkspaceSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NetworkInterfaceId: !Ref ProxyInternalInterface
+
+Outputs:
+
+  StackName:
+    Value: !Ref 'AWS::StackName'
+
+  InstanceId:
+    Value: !Ref 'Instance'
+
+  InstanceIp:
+    Value: !GetAtt [Instance, PublicIp]
+
+

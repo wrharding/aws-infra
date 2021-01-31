@@ -1,0 +1,183 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Alarms for Account Spend
+
+Parameters:
+  pAccountDescription:
+    Description: Short Name for account (ie dev,ref,prod)
+    Type: String
+    Default: "SECCDC-Prod"
+
+  pInitialSubscriberEmail:
+    Description: Add this initial email to the alerts
+    Type: String
+    Default: CHANGETHIS
+
+  pInitialSubscriberSMS:
+    Description: Add this initial Cell for SMS notification of critical alerts
+    Type: String
+    Default: 1-404-867-5309-CHANGETHIS
+
+  pBillingThreshold1:
+    Description: Sets the first billing alert to go off above this figure
+    Type: Number
+    Default: 2
+
+  pBillingThreshold2:
+    Description: Sets the second billing alert to go off above this figure
+    Type: Number
+    Default: 5
+
+  pCriticalBillingThreshold1:
+    Description: Sets the first critical billing alert to go off above this figure
+    Type: Number
+    Default: 10
+
+  pCriticalBillingThreshold2:
+    Description: Sets the second critical billing alert to go off above this figure
+    Type: Number
+    Default: 20
+
+Resources:
+
+  SNSCriticalTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Join ['', ["Critical Billing Alert for ", !Ref 'pAccountDescription']]
+      Subscription:
+      - Endpoint: !Ref 'pInitialSubscriberEmail'
+        Protocol: email
+      - Endpoint: !Ref 'pInitialSubscriberSMS'
+        Protocol: sms
+      TopicName: !Join ['-', ["Critical-Billing-Alarms", !Ref 'pAccountDescription']]
+
+  SNSAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Join ['', ["Billing Alert for ", !Ref 'pAccountDescription']]
+      Subscription:
+      - Endpoint: !Ref 'pInitialSubscriberEmail'
+        Protocol: email
+      TopicName: !Join ['-', ["Billing-Alarms", !Ref 'pAccountDescription']]
+
+  SNSAlertPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Id: AlertTopicPolicy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: My-statement-id
+          Effect: Allow
+          Principal:
+            AWS: "*"
+          Action: sns:Publish
+          Resource: '*'
+          Condition:
+            StringEquals:
+              AWS:SourceOwner: !Ref AWS::AccountId
+      Topics:
+        - !Ref 'SNSCriticalTopic'
+        - !Ref 'SNSAlertTopic'
+
+  SpendingAlarm1:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Join ['', [Alarm if AWS spending is over $, !Ref 'pBillingThreshold1']]
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+      - Name: Currency
+        Value: USD
+      Statistic: Maximum
+      Period: '21600'
+      EvaluationPeriods: '1'
+      Threshold: !Ref 'pBillingThreshold1'
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref 'SNSAlertTopic']
+      TreatMissingData: notBreaching
+
+  SpendingAlarm2:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Join ['', [Alarm if AWS spending is over $, !Ref 'pBillingThreshold2']]
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+      - Name: Currency
+        Value: USD
+      Statistic: Maximum
+      Period: '21600'
+      EvaluationPeriods: '1'
+      Threshold: !Ref 'pBillingThreshold2'
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref 'SNSAlertTopic']
+      TreatMissingData: notBreaching
+
+  CriticalSpendingAlarm1:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Join ['', [Alarm if AWS spending is over $, !Ref 'pCriticalBillingThreshold1']]
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+      - Name: Currency
+        Value: USD
+      Statistic: Maximum
+      Period: '21600'
+      EvaluationPeriods: '1'
+      Threshold: !Ref 'pCriticalBillingThreshold1'
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref 'SNSAlertTopic']
+      TreatMissingData: notBreaching
+
+  CriticalSpendingAlarm2:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Join ['', [Alarm if AWS spending is over $, !Ref 'pCriticalBillingThreshold2']]
+      Namespace: AWS/Billing
+      MetricName: EstimatedCharges
+      Dimensions:
+      - Name: Currency
+        Value: USD
+      Statistic: Maximum
+      Period: '21600'
+      EvaluationPeriods: '1'
+      Threshold: !Ref 'pCriticalBillingThreshold2'
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref 'SNSAlertTopic']
+      TreatMissingData: notBreaching
+
+Outputs:
+
+  SNSCriticalTopicArn:
+    Description: ARN of the Critical Billing alert Topic
+    Value: !Ref 'SNSCriticalTopic'
+
+  SNSAlertTopic:
+    Description: ARN of the  Billing alert Topic
+    Value: !Ref 'SNSAlertTopic'
+
+  TemplateVersion:
+    Value: "1.0.0"

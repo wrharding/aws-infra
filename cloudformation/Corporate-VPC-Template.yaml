@@ -1,0 +1,497 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SECCDC Competition Central Corp VPC
+
+# Paremeters are inputs to CloudFormation. As convention I always prefix them with "p" so it's
+# obvious when referencing a Parameter or Resource
+Parameters:
+
+  pVPCDomain:
+    Description: Fake DNS Zone for this vpc
+    Type: String
+    Default: corporate.seccdc.room17.com
+
+  pRootHostedZoneId:
+    Description: HostedZoneId of the Parent domain to register this VPCs Route53 Zone into
+    Type: String
+    Default: only-required-for-corporate-vpc
+
+  pFirstAzName:
+    Description: Availability Zone 1 Name in Region. Must be one of use1-az4, use1-az6, use1-az2
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+
+  pSecondAzName:
+    Description: Availability Zone 2 Name in Region. Must be one of use1-az4, use1-az6, use1-az2
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1b
+
+  pVpcCIDR:
+    Description: CIDR block for VPC
+    Type: String
+    Default: 10.10.999.0/24
+
+  pPublicSubnetACIDR:
+    Description: CIDR block for Public Subnet A
+    Type: String
+    Default: 10.10.999.0/28
+
+  pPublicSubnetBCIDR:
+    Description: CIDR block for Second Public Subnet Subnet
+    Type: String
+    Default: 10.10.999.16/28
+
+  pServerSubnetCIDR:
+    Description: CIDR block for Server Subnet
+    Type: String
+    Default: 10.10.999.64/26
+
+  pWorkspacesSubnetACIDR:
+    Description: CIDR block for WorkSpace Subnet in AZ1
+    Type: String
+    Default: 10.10.999.128/26
+
+  pWorkspacesSubnetBCIDR:
+    Description: CIDR block for WorkSpace Subnet in AZ2 Subnet
+    Type: String
+    Default: 10.10.999.192/26
+
+  pDeployNatGW:
+    Description: Deploy NatGateways for your Private Subnets - *** Will Incur Charges!!!! ***
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  pEnableFlowLogs:
+    Description: Enable VPC FlowLogs to CloudWatch Logs - *** Will Incur Charges!!!! ***
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  pCorporateCIDR:
+    Type: String
+    Description: CIDR Range for the entire corporate network.
+    Default: 10.0.0.0/8
+
+
+# Conditions are booleans that are used in the Resources block to control behavior
+Conditions:
+
+  # Do we deploy NatGateways or not. Both of these cost money so they're optional
+  cDeployNatGateways: !Equals [ !Ref pDeployNatGW, 'true' ]
+  cFlowLogs: !Equals [ !Ref pEnableFlowLogs, 'true' ]
+
+Resources:
+  # Reference http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html for Resource type definitions
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref 'pVpcCIDR'
+      InstanceTenancy: default
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+
+  DHCPoptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: !Ref 'pVPCDomain'
+      DomainNameServers:
+        - AmazonProvidedDNS
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-DHCPOptions"
+
+  DHCPOptionsAssoc:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId: !Ref VPC
+      DhcpOptionsId: !Ref DHCPoptions
+
+  #
+  # Subnets
+  #
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref pPublicSubnetACIDR
+      AvailabilityZone: !Ref 'pFirstAzName'
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicSubnet"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref pPublicSubnetBCIDR
+      AvailabilityZone: !Ref 'pSecondAzName'
+      MapPublicIpOnLaunch: 'true'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-Public2-Subnet"
+
+  ServerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref 'pServerSubnetCIDR'
+      AvailabilityZone: !Ref 'pFirstAzName'
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-Server-Subnet"
+
+  WorkSpacesSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref 'pWorkspacesSubnetACIDR'
+      AvailabilityZone: !Ref pFirstAzName
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-WorkSpacesSubnet-${pFirstAzName}"
+
+  WorkSpacesSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref 'pWorkspacesSubnetBCIDR'
+      AvailabilityZone: !Ref pSecondAzName
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-WorkSpacesSubnet-${pSecondAzName}"
+
+  #
+  # Create the Route Tables
+  #
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-PublicRouteTable"
+
+  ServerSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ServerRouteTable"
+
+  WorkspacesSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-WorkspacesRouteTable"
+
+  #
+  # Associate Route Tables with their subnets
+  #
+  PublicARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref 'PublicSubnetA'
+
+  PublicBRouteAssoc:
+    # Red team gets straight up internet access
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  ServerRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref ServerSubnetRouteTable
+      SubnetId: !Ref ServerSubnet
+
+  WorkspacesARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WorkspacesSubnetRouteTable
+      SubnetId: !Ref WorkSpacesSubnetA
+
+  WorkspacesBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WorkspacesSubnetRouteTable
+      SubnetId: !Ref WorkSpacesSubnetB
+
+
+  #
+  # Define the Routes
+  #
+
+  # Public Route table has direct access to the Internet via a route to the IGW
+  RouteIGW:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      GatewayId: !Ref IGW
+      DestinationCidrBlock: 0.0.0.0/0
+
+  #
+  # Create more router endpoints for the VPC
+  #
+
+  # Create and Internet gateway and associate it to the VPC
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-IGW"
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn: IGW
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  # Allows direct access to S3 for BuildTeam needs
+  VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: '*'
+            Effect: Allow
+            Resource: '*'
+            Principal: '*'
+      RouteTableIds:
+        - !Ref PublicRouteTable
+        - !Ref ServerSubnetRouteTable
+        - !Ref WorkspacesSubnetRouteTable
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcId: !Ref VPC
+
+  # Not yet used but belongs in most VPCs anyway
+  VPNGateway:
+    Type: AWS::EC2::VPNGateway
+    Properties:
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vgw"
+  VPNGatewayAssociation:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      VpnGatewayId: !Ref VPNGateway
+
+  #
+  # Nat Gateway Resources
+  #
+  FirstNatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Condition: cDeployNatGateways
+    DependsOn: VPC
+    Properties:
+      Domain: vpc
+
+  FirstNatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: cDeployNatGateways
+    Properties:
+      AllocationId: !GetAtt 'FirstNatGatewayEIP.AllocationId'
+      SubnetId: !Ref 'PublicSubnetA'
+
+  NatGatewayEIPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Condition: cDeployNatGateways
+    Properties:
+      HostedZoneId: !Ref VPCPublicHostedZone
+      Name: !Sub "natgateway.${pVPCDomain}"
+      ResourceRecords:
+        - !Ref FirstNatGatewayEIP
+      TTL: 60
+      Type: A
+
+
+  # Create a security group that allows anything in the 10/8 space to talk to anything else
+  # This should only be used for servers and workspaces. Anything on the Public subnets should
+  # have its own custom Security Group.
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: "Generated by the Corporate VPC Template"
+      GroupName: !Sub "${AWS::StackName}-SecurityGroup"
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          Description: "Allow all from 10/8 (added by CFT)"
+          CidrIp: "10.0.0.0/8"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-CorpSecurityGroup"
+
+  #
+  # Here we enable VPC flow logs for forensic needs later
+  #
+  VpcFlowLogRole:
+    Type: AWS::IAM::Role
+    Condition: cFlowLogs
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: VPCFlowLog
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource: '*'
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Condition: cFlowLogs
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt 'VpcFlowLogRole.Arn'
+      LogGroupName: !Sub "/aws/vpcFlowLogs/${AWS::StackName}"
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+
+  #
+  # Create DNS
+  #
+  VPCPrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      HostedZoneConfig:
+        Comment: !Sub "Private HostedZone for ${AWS::StackName}"
+      Name: !Ref pVPCDomain
+      # QueryLoggingConfig:
+      #     CloudWatchLogsLogGroupArn: String
+      VPCs:
+        - VPCId: !Ref VPC
+          VPCRegion: !Ref AWS::Region
+
+  VPCPublicHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      HostedZoneConfig:
+        Comment: !Sub "Public HostedZone for ${AWS::StackName}"
+      Name: !Ref pVPCDomain
+
+  VPCPublicHostedZoneRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Comment: !Sub "Public HostedZone for ${AWS::StackName}"
+      Name: !Ref pVPCDomain
+      HostedZoneId: !Ref pRootHostedZoneId
+      Type: NS
+      TTL: 300
+      ResourceRecords: !GetAtt VPCPublicHostedZone.NameServers
+
+
+Outputs:
+
+  VpcId:
+    Description: VPC ID Created
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  StackName:
+    Description: StackName
+    Value: !Ref 'AWS::StackName'
+
+  PublicSubnetA:
+    Description: Subnet ID of the Public Subnet
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetA"
+
+  PublicSubnetB:
+    Description: Subnet ID of the Second Public Subnet
+    Value: !Ref PublicSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetB"
+
+  ServerSubnet:
+    Description: Subnet ID of the Server Subnet
+    Value: !Ref ServerSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-ServerSubnet"
+
+  WorkspacesSubnetA:
+    Description: Subnet ID of the First WorkSpaces Subnet
+    Value: !Ref WorkSpacesSubnetA
+    Export:
+      Name: !Sub "${AWS::StackName}-WorkspacesSubnetA"
+
+  WorkspacesSubnetB:
+    Description: Subnet ID of the Second WorkSpaces Subnet
+    Value: !Ref WorkSpacesSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}-WorkspacesSubnetB"
+
+  SecurityGroup:
+    Description: ID of the Security Group Created
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityGroup"
+
+  VPCPrivateHostedZoneId:
+    Description: HostedZoneId for the internal VPC DNS Zone
+    Value: !Ref VPCPrivateHostedZone
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateZoneId"
+
+  VPCPublicHostedZoneId:
+    Value: !Ref VPCPublicHostedZone
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicZoneId"
+
+
+
