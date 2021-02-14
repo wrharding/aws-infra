@@ -1,0 +1,295 @@
+# MIT License
+
+# Copyright (c) 2020-2021 Chris Farris (https://www.chrisfarris.com)
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy VM-Series Firewall for the Corp VPC
+
+Parameters:
+
+  BootstrapBucketName:
+    Description: Bucket name for FW bootstrap configuration
+    Type: String
+
+  BootstrapBucketPrefix:
+    Description: Prefix of the files in the bootstrap bucket
+    Type: String
+
+  ServerKeyName:
+    Description: KeyPair for access to PaloAlto
+    Type: AWS::EC2::KeyPair::KeyName
+
+  pVMSeriesAMI:
+    Description: Marketplace Image for the VM-Series to deploy
+    Type: AWS::EC2::Image::Id
+    Default: ami-029d5afac0e714fd7
+
+  pInstanceType:
+    Description: Instance Type for the VM-Series
+    Type: String
+    Default: m5.xlarge
+
+  pVpcId:
+    Description: VpcId of the Team VPC
+    Type: AWS::EC2::VPC::Id
+
+  pServerSubnet:
+    Description: SubnetId of the Server Subnet where the Management IF will be created
+    Type: AWS::EC2::Subnet::Id
+
+  pPublicSubnet:
+    Description: SubnetId of the Public Subnet where the external IF will be created
+    Type: AWS::EC2::Subnet::Id
+
+  pFWSubnet:
+    Description: SubnetId of the Internal Subnet where the Internal IF will be created
+    Type: AWS::EC2::Subnet::Id
+
+  pManagementIP:
+    Type: String
+    Description: Static IP for the management interface
+    Default: 10.10.100.140
+
+  pVPCPrivateHostedZoneId:
+    Type: String
+    Description: Hosted Zone ID of the Private HostedZoneId - created by Corporate VPC
+
+  pVPCPublicHostedZoneId:
+    Description: Hosted Zone ID to create DNS Record
+    Type: String
+
+  pVPCDomain:
+    Description: DNS Suffix for this team's VPC
+    Type: String
+    Default: teamX.halcorp.seccdc.net
+
+
+Resources:
+
+  BootstrapRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: BootstrapRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${BootstrapBucketName}"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${BootstrapBucketName}/*"
+
+  BootstrapInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'BootstrapRole'
+
+
+  #
+  # Firewall Interfaces
+  #
+  FWPublicNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: AWS FW1 E1/1
+      SubnetId: !Ref pPublicSubnet
+      SourceDestCheck: 'false'
+      GroupSet:
+        - !Ref FWExteriorSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} AWS FW1 E1/1"
+    DependsOn:
+      - FWExteriorSecurityGroup
+
+  FWInsideNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: AWS FW1 E1/2
+      SubnetId: !Ref pFWSubnet
+      SourceDestCheck: 'false'
+      GroupSet:
+        - !Ref PANSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} AWS FW1 E1/2"
+    DependsOn:
+      - PANSecurityGroup
+
+  FWManagementNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: AWS FW1 MGMT
+      SubnetId: !Ref pServerSubnet
+      SourceDestCheck: 'false'
+      # PrivateIpAddresses:
+      #   - PrivateIpAddress: !Ref pManagementIP
+      #     Primary: 'true'
+      GroupSet:
+        - !Ref 'PANSecurityGroup'
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} AWS FW1 MGMT"
+    DependsOn:
+      - PANSecurityGroup
+
+  FWPublicNetworkInterfaceEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  FWPublicNetworkInterfaceEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt FWPublicNetworkInterfaceEIP.AllocationId
+      NetworkInterfaceId: !Ref FWPublicNetworkInterface
+
+  FWExteriorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Firewall External Interface
+      VpcId: !Ref pVpcId
+      Tags:
+        - Key: Name
+          Value: Firewall External SG
+      SecurityGroupIngress:
+        - IpProtocol: '1'
+          FromPort: -1
+          ToPort: -1
+          CidrIp: '0.0.0.0/0'
+          Description: Allow Ping From Everywhere
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow Everything - Remove me during Competition
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+
+  PANSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Wide open security group
+      VpcId: !Ref 'pVpcId'
+      Tags:
+        - Key: Name
+          Value: PaloAlto Internal SG
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+
+  FWInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      DisableApiTermination: 'false'
+      IamInstanceProfile: !Ref 'BootstrapInstanceProfile'
+      InstanceInitiatedShutdownBehavior: stop
+      EbsOptimized: 'true'
+      ImageId: !Ref pVMSeriesAMI
+      InstanceType: !Ref pInstanceType
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            DeleteOnTermination: 'true'
+            VolumeSize: '60'
+      KeyName: !Ref 'ServerKeyName'
+      Monitoring: 'false'
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName} VM-Series Firewall"
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref 'FWManagementNetworkInterface'
+          DeviceIndex: 0
+        - NetworkInterfaceId: !Ref 'FWPublicNetworkInterface'
+          DeviceIndex: 1
+        - NetworkInterfaceId: !Ref 'FWInsideNetworkInterface'
+          DeviceIndex: 2
+      UserData: !Base64
+        Fn::Sub: "vmseries-bootstrap-aws-s3bucket=${BootstrapBucketName}/${BootstrapBucketPrefix}"
+    DependsOn:
+      - FWManagementNetworkInterface
+      - FWInsideNetworkInterface
+      - FWPublicNetworkInterface
+
+  #
+  # DNS
+  #
+  ExternalIPRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPublicHostedZoneId
+      Name: !Sub "firewall.${pVPCDomain}"
+      ResourceRecords:
+        - !Ref FWPublicNetworkInterfaceEIP
+      TTL: 60
+      Type: A
+
+  ExternalIPPrivateRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPrivateHostedZoneId
+      Name: !Sub "firewall-ext.${pVPCDomain}"
+      ResourceRecords:
+        - !GetAtt FWPublicNetworkInterface.PrimaryPrivateIpAddress
+      TTL: 60
+      Type: A
+
+  InternalIPPrivateRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPrivateHostedZoneId
+      Name: !Sub "firewall-int.${pVPCDomain}"
+      ResourceRecords:
+        - !GetAtt FWInsideNetworkInterface.PrimaryPrivateIpAddress
+      TTL: 60
+      Type: A
+
+  ManagementNetworkInterfaceRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref pVPCPrivateHostedZoneId
+      Name: !Sub "firewall-mgmt.${pVPCDomain}"
+      ResourceRecords:
+        - !GetAtt FWManagementNetworkInterface.PrimaryPrivateIpAddress
+      TTL: 60
+      Type: A
+
+
+Outputs:
+
+  FirewallManagementURL:
+    Value: !Sub "https://${FWInstance.PrivateIp}/php/login.php"
+
+
