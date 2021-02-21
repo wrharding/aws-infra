@@ -40,12 +40,12 @@ Parameters:
   pVMSeriesAMI:
     Description: Marketplace Image for the VM-Series to deploy
     Type: AWS::EC2::Image::Id
-    Default: ami-029d5afac0e714fd7
+    Default: ami-0d92827251ebe231d  # BYOL
 
   pInstanceType:
     Description: Instance Type for the VM-Series
     Type: String
-    Default: m5.xlarge
+    Default: m5.large
 
   pVpcId:
     Description: VpcId of the Team VPC
@@ -66,7 +66,7 @@ Parameters:
   pManagementIP:
     Type: String
     Description: Static IP for the management interface
-    Default: 10.10.100.140
+    Default: 10.10.100.99
 
   pVPCPrivateHostedZoneId:
     Type: String
@@ -79,7 +79,6 @@ Parameters:
   pVPCDomain:
     Description: DNS Suffix for this team's VPC
     Type: String
-    Default: teamX.halcorp.seccdc.net
 
 
 Resources:
@@ -152,9 +151,9 @@ Resources:
       Description: AWS FW1 MGMT
       SubnetId: !Ref pServerSubnet
       SourceDestCheck: 'false'
-      # PrivateIpAddresses:
-      #   - PrivateIpAddress: !Ref pManagementIP
-      #     Primary: 'true'
+      PrivateIpAddresses:
+        - PrivateIpAddress: !Ref pManagementIP
+          Primary: 'true'
       GroupSet:
         - !Ref 'PANSecurityGroup'
       Tags:
