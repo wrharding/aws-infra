@@ -92,14 +92,14 @@ Resources:
       Tags:
       - Key: Name
         Value: !Ref AWS::StackName
-      UserData:
-        Fn::Base64:
-          Fn::Sub: |
-            #!/bin/bash -x
-            yum update -y &&
-            yum install -y nmap git awslogs &&
-            chkconfig awslogs on && service awslogs restart
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
+      # UserData:
+      #   Fn::Base64:
+      #     Fn::Sub: |
+      #       #!/bin/bash -x
+      #       yum update -y &&
+      #       yum install -y nmap git awslogs &&
+      #       chkconfig awslogs on && service awslogs restart
+      #       /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Instance --region ${AWS::Region}
 
   InstanceIamInstanceProfile:
     Condition: CreateInstanceProfile
