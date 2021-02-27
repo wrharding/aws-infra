@@ -43,7 +43,7 @@ Parameters:
   pInstanceType:
     Description: Size of the Instance
     Type: String
-    AllowedValues: [t2.micro, t2.small, t2.medium, t3.micro, t3.small, t3.medium]
+    AllowedValues: [t2.micro, t2.small, t2.medium, t3.micro, t3.small, t3.medium, t3.xlarge]
     Default: t2.micro
 
   pInstanceAMI:
