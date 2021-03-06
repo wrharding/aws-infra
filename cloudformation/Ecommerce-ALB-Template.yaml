@@ -173,12 +173,13 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: !Ref AWS::StackName
-      Port: 80
+      Port: 8080
       Protocol: HTTP
+      HealthCheckPath: /healthz
       Targets:
         - Id: !Ref pTargetIP
           AvailabilityZone: !Ref pServerAZ
-          Port: 80
+          Port: 8080
       TargetType: ip
       VpcId: !Ref pVpcId
 
