@@ -29,6 +29,10 @@ Parameters:
     Description: Bucket name for FW bootstrap configuration
     Type: String
 
+  BootstrapBucketPrefix:
+    Description: Prefix of the files in the bootstrap bucket
+    Type: String
+
   ServerKeyName:
     Description: KeyPair for access to PaloAlto
     Type: AWS::EC2::KeyPair::KeyName
@@ -36,12 +40,12 @@ Parameters:
   pVMSeriesAMI:
     Description: Marketplace Image for the VM-Series to deploy
     Type: AWS::EC2::Image::Id
-    Default: ami-029d5afac0e714fd7
+    Default: ami-0d92827251ebe231d  # BYOL
 
   pInstanceType:
     Description: Instance Type for the VM-Series
     Type: String
-    Default: m5.xlarge
+    Default: m5.large
 
   pVpcId:
     Description: VpcId of the Team VPC
@@ -176,7 +180,7 @@ Resources:
         - NetworkInterfaceId: !Ref 'pDMZSubnetInterface'
           DeviceIndex: 2
       UserData: !Base64
-        Fn::Sub: "vmseries-bootstrap-aws-s3bucket=${BootstrapBucketName}"
+        Fn::Sub: "vmseries-bootstrap-aws-s3bucket=${BootstrapBucketName}/${BootstrapBucketPrefix}"
     DependsOn:
       - FWManagementNetworkInterface
 
