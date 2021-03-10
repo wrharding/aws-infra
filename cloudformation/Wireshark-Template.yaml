@@ -337,7 +337,7 @@ Resources:
                         continue
 
                     for tag in i['Tags']:
-                        if tag['Key'] == TAG_KEY:
+                        if tag['Key'] == "Team" and tag['Value'] == TAG_KEY:  # Override
                             # See if a mirror session is setup
                             for eni in i['NetworkInterfaces']:
                                 if eni['NetworkInterfaceId'] not in enabled_enis:
